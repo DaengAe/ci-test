@@ -18,11 +18,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Compose
-        run: docker-compose --version
-
       - name: Start Docker Compose services
-        run: docker-compose -f infra/docker-compose.yml up -d
+        run: docker compose -f infra/docker-compose.yml up -d
 
       - name: Wait for all services to be healthy
         run: |
@@ -34,7 +31,7 @@ jobs:
             while [ $SECONDS -lt $end ]; do
               all_healthy=true
               for service in $SERVICES_TO_CHECK; do
-                status=$(docker inspect --format='{{.State.Health.Status}}' $service)
+                status=$(docker inspect --format='{{.State.Health.Status}}' $service 2>/dev/null || echo "unhealthy")
                 echo "$service: $status"
                 if [ "$status" != "healthy" ]; then
                   all_healthy=false
@@ -47,11 +44,11 @@ jobs:
               sleep $HEALTHCHECK_INTERVAL
             done
             echo "Not all services are healthy, restarting containers..."
-            docker-compose -f infra/docker-compose.yml restart
+            docker compose -f infra/docker-compose.yml restart
             attempt=$((attempt + 1))
           done
           echo "Error: Services failed to become healthy after $HEALTHCHECK_RETRIES attempts."
-          docker-compose -f infra/docker-compose.yml logs
+          docker compose -f infra/docker-compose.yml logs
           exit 1
 
       - name: Set up JDK 24
@@ -99,4 +96,4 @@ jobs:
 
       - name: Tear down Docker Compose
         if: always()
-        run: docker-compose -f infra/docker-compose.yml down
+        run: docker compose -f infra/docker-compose.yml down

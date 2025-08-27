@@ -9,10 +9,10 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      HEALTHCHECK_TIMEOUT: 120   # 헬스체크 최대 대기 시간(초)
-      HEALTHCHECK_INTERVAL: 3    # 헬스체크 간격(초)
-      HEALTHCHECK_RETRIES: 3     # 헬스체크 최대 재시도 횟수
-      SERVICES_TO_CHECK: "mysql redis"  # 헬스체크 대상
+      HEALTHCHECK_TIMEOUT: 120
+      HEALTHCHECK_INTERVAL: 3
+      HEALTHCHECK_RETRIES: 3
+      SERVICES_TO_CHECK: "mysql redis"
 
     steps:
       # --------------------------
@@ -22,58 +22,42 @@ jobs:
         uses: actions/checkout@v4
 
       # --------------------------
-      #  Docker 네트워크 생성 (CI 환경용)
+      #  Docker 네트워크 생성 (옵션)
       # --------------------------
       - name: Create Docker network
         run: docker network create cou-commerce-net || echo "Network already exists"
 
       # --------------------------
-      #  Docker Compose 서비스 시작
+      #  MySQL 컨테이너 시작
       # --------------------------
       - name: Start MySQL service
         run: |
           cd $GITHUB_WORKSPACE/infra/mysql
           docker compose up -d
+          # MySQL 포트 확인
+          echo "Waiting for MySQL port 3306..."
+          until mysqladmin ping -h 127.0.0.1 -u app -papp-secret --silent; do
+            echo "Waiting for MySQL..."
+            sleep 2
+          done
 
+      # --------------------------
+      #  Redis 컨테이너 시작
+      # --------------------------
       - name: Start Redis service
         run: |
           cd $GITHUB_WORKSPACE/infra/redis
           docker compose up -d
-
-      # --------------------------
-      #  서비스 헬스체크
-      # --------------------------
-      - name: Wait for all services to be healthy
-        run: |
-          echo "Waiting for services to be healthy: $SERVICES_TO_CHECK"
-          attempt=1
-          while [ $attempt -le $HEALTHCHECK_RETRIES ]; do
-            echo "Attempt $attempt of $HEALTHCHECK_RETRIES"
-            end=$((SECONDS + HEALTHCHECK_TIMEOUT))
-            while [ $SECONDS -lt $end ]; do
-              all_healthy=true
-              for service in $SERVICES_TO_CHECK; do
-                status=$(docker inspect --format='{{.State.Health.Status}}' $service 2>/dev/null || echo "unhealthy")
-                echo "$service: $status"
-                if [ "$status" != "healthy" ]; then
-                  all_healthy=false
-                fi
-              done
-              if [ "$all_healthy" = true ]; then
-                echo "All services are healthy!"
-                exit 0
-              fi
-              sleep $HEALTHCHECK_INTERVAL
-            done
-            echo "Not all services are healthy, restarting..."
-            cd $GITHUB_WORKSPACE/infra/mysql && docker compose restart
-            cd $GITHUB_WORKSPACE/infra/redis && docker compose restart
-            attempt=$((attempt + 1))
+          # Redis 헬스체크
+          end=$((SECONDS + 30))
+          while [ $SECONDS -lt $end ]; do
+            if redis-cli -h 127.0.0.1 ping | grep -q PONG; then
+              echo "Redis is ready!"
+              break
+            fi
+            echo "Waiting for Redis..."
+            sleep 2
           done
-          echo "Error: Services failed to become healthy"
-          cd $GITHUB_WORKSPACE/infra/mysql && docker compose logs
-          cd $GITHUB_WORKSPACE/infra/redis && docker compose logs
-          exit 1
 
       # --------------------------
       #  JDK 및 Gradle 설정
@@ -98,12 +82,12 @@ jobs:
         run: chmod +x ./gradlew
 
       # --------------------------
-      #  Build & Test
+      #  Gradle 빌드 & 테스트
       # --------------------------
       - name: Build and Test with Gradle
         env:
           SPRING_PROFILES_ACTIVE: test
-          SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/coucommercedb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul
+          SPRING_DATASOURCE_URL: jdbc:mysql://127.0.0.1:3306/coucommercedb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul
           SPRING_DATASOURCE_USERNAME: app
           SPRING_DATASOURCE_PASSWORD: app-secret
         run: ./gradlew build
@@ -128,7 +112,7 @@ jobs:
           if-no-files-found: warn
 
       # --------------------------
-      #  서비스 종료
+      #  컨테이너 종료
       # --------------------------
       - name: Tear down MySQL and Redis
         if: always()

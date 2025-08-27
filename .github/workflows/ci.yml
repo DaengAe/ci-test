@@ -7,16 +7,25 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    
+
     env:
-      HEALTHCHECK_TIMEOUT: 120   # 각 시도별 최대 대기 시간(초)
+      HEALTHCHECK_TIMEOUT: 120   # 헬스체크 최대 대기 시간(초)
       HEALTHCHECK_INTERVAL: 3    # 헬스체크 간격(초)
-      HEALTHCHECK_RETRIES: 3     # 최대 재시도 횟수
-      SERVICES_TO_CHECK: "mysql redis"  # 헬스체크 대상 컨테이너 목록
+      HEALTHCHECK_RETRIES: 3     # 헬스체크 최대 재시도 횟수
+      SERVICES_TO_CHECK: "mysql redis"  # 헬스체크 대상
 
     steps:
+      # --------------------------
+      #  체크아웃
+      # --------------------------
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # --------------------------
+      #  Docker 네트워크 생성 (CI 환경용)
+      # --------------------------
+      - name: Create Docker network
+        run: docker network create cou-commerce-net || echo "Network already exists"
 
       # --------------------------
       #  Docker Compose 서비스 시작

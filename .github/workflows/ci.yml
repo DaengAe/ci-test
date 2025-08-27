@@ -7,35 +7,52 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    # Docker Service 컨테이너를 실행합니다.
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: coucommercedb
-          MYSQL_USER: app
-          MYSQL_PASSWORD: app-secret
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h localhost"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
+    
+    env:
+      HEALTHCHECK_TIMEOUT: 120   # 각 시도별 최대 대기 시간(초)
+      HEALTHCHECK_INTERVAL: 3    # 헬스체크 간격(초)
+      HEALTHCHECK_RETRIES: 3     # 최대 재시도 횟수
+      SERVICES_TO_CHECK: "mysql redis"  # 헬스체크 대상 컨테이너 목록
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set up Docker Compose
+        run: docker-compose --version
+
+      - name: Start Docker Compose services
+        run: docker-compose -f infra/docker-compose.yml up -d
+
+      - name: Wait for all services to be healthy
+        run: |
+          echo "Waiting for services to be healthy: $SERVICES_TO_CHECK"
+          attempt=1
+          while [ $attempt -le $HEALTHCHECK_RETRIES ]; do
+            echo "Attempt $attempt of $HEALTHCHECK_RETRIES"
+            end=$((SECONDS + HEALTHCHECK_TIMEOUT))
+            while [ $SECONDS -lt $end ]; do
+              all_healthy=true
+              for service in $SERVICES_TO_CHECK; do
+                status=$(docker inspect --format='{{.State.Health.Status}}' $service)
+                echo "$service: $status"
+                if [ "$status" != "healthy" ]; then
+                  all_healthy=false
+                fi
+              done
+              if [ "$all_healthy" = true ]; then
+                echo "All services are healthy!"
+                exit 0
+              fi
+              sleep $HEALTHCHECK_INTERVAL
+            done
+            echo "Not all services are healthy, restarting containers..."
+            docker-compose -f infra/docker-compose.yml restart
+            attempt=$((attempt + 1))
+          done
+          echo "Error: Services failed to become healthy after $HEALTHCHECK_RETRIES attempts."
+          docker-compose -f infra/docker-compose.yml logs
+          exit 1
 
       - name: Set up JDK 24
         uses: actions/setup-java@v4
@@ -56,16 +73,12 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
-      - name: Wait for MySQL service to be ready
-        run: |
-          until mysqladmin ping -h 127.0.0.1 -u root -proot --silent; do
-            echo "Waiting for MySQL..."
-            sleep 2
-          done
-
       - name: Build and Test with Gradle
         env:
           SPRING_PROFILES_ACTIVE: test
+          SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/coucommercedb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul
+          SPRING_DATASOURCE_USERNAME: app
+          SPRING_DATASOURCE_PASSWORD: app-secret
         run: ./gradlew build
 
       - name: Upload Checkstyle Report on failure
@@ -83,3 +96,7 @@ jobs:
           name: test-report
           path: build/reports/tests/test/
           if-no-files-found: warn
+
+      - name: Tear down Docker Compose
+        if: always()
+        run: docker-compose -f infra/docker-compose.yml down
